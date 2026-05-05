@@ -9,8 +9,10 @@ pub mod services {
 use services::{
     payment_service_server::{PaymentService, PaymentServiceServer},
     transaction_service_server::{TransactionService, TransactionServiceServer},
+    chat_service_server::{ChatService, ChatServiceServer},
     PaymentRequest, PaymentResponse,
     TransactionRequest, TransactionResponse,
+    ChatMessage,
 };
 
 // ─── Payment Service (Unary) ───────────────────────────────────────────────
@@ -67,10 +69,44 @@ impl TransactionService for MyTransactionService {
                 };
                 tx.send(Ok(transaction)).await.unwrap();
 
-                // Every 10th record simulate processing delay
                 if i % 10 == 0 {
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+// ─── Chat Service (Bi-directional Streaming) ───────────────────────────────
+
+#[derive(Default)]
+pub struct MyChatService {}
+
+#[tonic::async_trait]
+impl ChatService for MyChatService {
+    type ChatStream = ReceiverStream<Result<ChatMessage, Status>>;
+
+    async fn chat(
+        &self,
+        request: Request<tonic::Streaming<ChatMessage>>,
+    ) -> Result<Response<Self::ChatStream>, Status> {
+        println!("Chat session started");
+
+        let mut stream = request.into_inner();
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            while let Some(message) = stream.message().await.unwrap_or_else(|_| None) {
+                println!("Received from {}: {}", message.user_id, message.message);
+
+                let reply = ChatMessage {
+                    user_id: "server".to_string(),
+                    message: format!("Server received: {}", message.message),
+                };
+
+                tx.send(Ok(reply)).await.unwrap_or_else(|_| {});
             }
         });
 
@@ -98,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .add_service(PaymentServiceServer::new(MyPaymentService::default()))
         .add_service(TransactionServiceServer::new(MyTransactionService::default()))
+        .add_service(ChatServiceServer::new(MyChatService::default()))
         .serve(addr)
         .await?;
 
